@@ -52,8 +52,6 @@ from pyspark.shuffle import Aggregator, ExternalMerger, \
     get_used_memory, ExternalSorter, ExternalGroupBy
 from pyspark.traceback_utils import SCCallSiteSync
 
-from py4j.java_collections import ListConverter, MapConverter
-
 
 __all__ = ["RDD"]
 
@@ -265,13 +263,44 @@ class RDD(object):
 
     def isCheckpointed(self):
         """
-        Return whether this RDD has been checkpointed or not
+        Return whether this RDD is checkpointed and materialized, either reliably or locally.
         """
         return self._jrdd.rdd().isCheckpointed()
+
+    def localCheckpoint(self):
+        """
+        Mark this RDD for local checkpointing using Spark's existing caching layer.
+
+        This method is for users who wish to truncate RDD lineages while skipping the expensive
+        step of replicating the materialized data in a reliable distributed file system. This is
+        useful for RDDs with long lineages that need to be truncated periodically (e.g. GraphX).
+
+        Local checkpointing sacrifices fault-tolerance for performance. In particular, checkpointed
+        data is written to ephemeral local storage in the executors instead of to a reliable,
+        fault-tolerant storage. The effect is that if an executor fails during the computation,
+        the checkpointed data may no longer be accessible, causing an irrecoverable job failure.
+
+        This is NOT safe to use with dynamic allocation, which removes executors along
+        with their cached blocks. If you must use both features, you are advised to set
+        L{spark.dynamicAllocation.cachedExecutorIdleTimeout} to a high value.
+
+        The checkpoint directory set through L{SparkContext.setCheckpointDir()} is not used.
+        """
+        self._jrdd.rdd().localCheckpoint()
+
+    def isLocallyCheckpointed(self):
+        """
+        Return whether this RDD is marked for local checkpointing.
+
+        Exposed for testing.
+        """
+        return self._jrdd.rdd().isLocallyCheckpointed()
 
     def getCheckpointFile(self):
         """
         Gets the name of the file to which this RDD was checkpointed
+
+        Not defined if RDD is checkpointed locally.
         """
         checkpointFile = self._jrdd.rdd().getCheckpointFile()
         if checkpointFile.isDefined():
@@ -387,6 +416,11 @@ class RDD(object):
             without replacement: probability that each element is chosen; fraction must be [0, 1]
             with replacement: expected number of times each element is chosen; fraction must be >= 0
         :param seed: seed for the random number generator
+
+        .. note::
+
+            This is not guaranteed to provide exactly the fraction specified of the total count
+            of the given :class:`DataFrame`.
 
         >>> rdd = sc.parallelize(range(100), 4)
         >>> 6 <= rdd.sample(False, 0.1, 81).count() <= 14
@@ -754,8 +788,8 @@ class RDD(object):
         Applies a function to each partition of this RDD.
 
         >>> def f(iterator):
-        ...      for x in iterator:
-        ...           print(x)
+        ...     for x in iterator:
+        ...          print(x)
         >>> sc.parallelize([1, 2, 3, 4, 5]).foreachPartition(f)
         """
         def func(it):
@@ -1027,20 +1061,20 @@ class RDD(object):
 
         If your histogram is evenly spaced (e.g. [0, 10, 20, 30]),
         this can be switched from an O(log n) inseration to O(1) per
-        element(where n = # buckets).
+        element (where n is the number of buckets).
 
-        Buckets must be sorted and not contain any duplicates, must be
+        Buckets must be sorted, not contain any duplicates, and have
         at least two elements.
 
-        If `buckets` is a number, it will generates buckets which are
+        If `buckets` is a number, it will generate buckets which are
         evenly spaced between the minimum and maximum of the RDD. For
-        example, if the min value is 0 and the max is 100, given buckets
-        as 2, the resulting buckets will be [0,50) [50,100]. buckets must
-        be at least 1 If the RDD contains infinity, NaN throws an exception
-        If the elements in RDD do not vary (max == min) always returns
-        a single bucket.
+        example, if the min value is 0 and the max is 100, given `buckets`
+        as 2, the resulting buckets will be [0,50) [50,100]. `buckets` must
+        be at least 1. An exception is raised if the RDD contains infinity.
+        If the elements in the RDD do not vary (max == min), a single bucket
+        will be used.
 
-        It will return an tuple of buckets and histogram.
+        The return value is a tuple of buckets and histogram.
 
         >>> rdd = sc.parallelize(range(51))
         >>> rdd.histogram(2)
@@ -1215,7 +1249,7 @@ class RDD(object):
 
     def top(self, num, key=None):
         """
-        Get the top N elements from a RDD.
+        Get the top N elements from an RDD.
 
         Note that this method should only be used if the resulting array is expected
         to be small, as all the data is loaded into the driver's memory.
@@ -1239,7 +1273,7 @@ class RDD(object):
 
     def takeOrdered(self, num, key=None):
         """
-        Get the N elements from a RDD ordered in ascending order or as
+        Get the N elements from an RDD ordered in ascending order or as
         specified by the optional key function.
 
         Note that this method should only be used if the resulting array is expected
@@ -2019,8 +2053,7 @@ class RDD(object):
          >>> len(rdd.repartition(10).glom().collect())
          10
         """
-        jrdd = self._jrdd.repartition(numPartitions)
-        return RDD(jrdd, self.ctx, self._jrdd_deserializer)
+        return self.coalesce(numPartitions, shuffle=True)
 
     def coalesce(self, numPartitions, shuffle=False):
         """
@@ -2031,7 +2064,15 @@ class RDD(object):
         >>> sc.parallelize([1, 2, 3, 4, 5], 3).coalesce(1).glom().collect()
         [[1, 2, 3, 4, 5]]
         """
-        jrdd = self._jrdd.coalesce(numPartitions, shuffle)
+        if shuffle:
+            # Decrease the batch size in order to distribute evenly the elements across output
+            # partitions. Otherwise, repartition will possibly produce highly skewed partitions.
+            batchSize = min(10, self.ctx._batchSize or 1024)
+            ser = BatchedSerializer(PickleSerializer(), batchSize)
+            selfCopy = self._reserialize(ser)
+            jrdd = selfCopy._jrdd.coalesce(numPartitions, shuffle)
+        else:
+            jrdd = self._jrdd.coalesce(numPartitions, shuffle)
         return RDD(jrdd, self.ctx, self._jrdd_deserializer)
 
     def zip(self, other):
@@ -2211,7 +2252,7 @@ class RDD(object):
         return values.collect()
 
     def _to_java_object_rdd(self):
-        """ Return an JavaRDD of Object by unpickling
+        """ Return a JavaRDD of Object by unpickling
 
         It will convert each Python object into Java object by Pyrolite, whenever the
         RDD is serialized in batch or not.
@@ -2317,16 +2358,9 @@ def _prepare_for_python_RDD(sc, command):
         # The broadcast will have same life cycle as created PythonRDD
         broadcast = sc.broadcast(pickled_command)
         pickled_command = ser.dumps(broadcast)
-    # There is a bug in py4j.java_gateway.JavaClass with auto_convert
-    # https://github.com/bartdag/py4j/issues/161
-    # TODO: use auto_convert once py4j fix the bug
-    broadcast_vars = ListConverter().convert(
-        [x._jbroadcast for x in sc._pickled_broadcast_vars],
-        sc._gateway._gateway_client)
+    broadcast_vars = [x._jbroadcast for x in sc._pickled_broadcast_vars]
     sc._pickled_broadcast_vars.clear()
-    env = MapConverter().convert(sc.environment, sc._gateway._gateway_client)
-    includes = ListConverter().convert(sc._python_includes, sc._gateway._gateway_client)
-    return pickled_command, broadcast_vars, env, includes
+    return pickled_command, broadcast_vars, sc.environment, sc._python_includes
 
 
 def _wrap_function(sc, func, deserializer, serializer, profiler=None):

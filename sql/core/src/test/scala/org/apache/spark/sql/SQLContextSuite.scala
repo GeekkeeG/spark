@@ -24,6 +24,7 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BooleanType, StringType, StructField, StructType}
 
+@deprecated("This suite is deprecated to silent compiler deprecation warnings", "2.0.0")
 class SQLContextSuite extends SparkFunSuite with SharedSparkContext {
 
   object DummyRule extends Rule[LogicalPlan] {
@@ -87,14 +88,14 @@ class SQLContextSuite extends SparkFunSuite with SharedSparkContext {
     df.createOrReplaceTempView("listtablessuitetable")
     assert(
       sqlContext.tables().filter("tableName = 'listtablessuitetable'").collect().toSeq ==
-      Row("listtablessuitetable", true) :: Nil)
+      Row("", "listtablessuitetable", true) :: Nil)
 
     assert(
       sqlContext.sql("SHOW tables").filter("tableName = 'listtablessuitetable'").collect().toSeq ==
-      Row("listtablessuitetable", true) :: Nil)
+      Row("", "listtablessuitetable", true) :: Nil)
 
     sqlContext.sessionState.catalog.dropTable(
-      TableIdentifier("listtablessuitetable"), ignoreIfNotExists = true)
+      TableIdentifier("listtablessuitetable"), ignoreIfNotExists = true, purge = false)
     assert(sqlContext.tables().filter("tableName = 'listtablessuitetable'").count() === 0)
   }
 
@@ -104,14 +105,14 @@ class SQLContextSuite extends SparkFunSuite with SharedSparkContext {
     df.createOrReplaceTempView("listtablessuitetable")
     assert(
       sqlContext.tables("default").filter("tableName = 'listtablessuitetable'").collect().toSeq ==
-      Row("listtablessuitetable", true) :: Nil)
+      Row("", "listtablessuitetable", true) :: Nil)
 
     assert(
       sqlContext.sql("show TABLES in default").filter("tableName = 'listtablessuitetable'")
-        .collect().toSeq == Row("listtablessuitetable", true) :: Nil)
+        .collect().toSeq == Row("", "listtablessuitetable", true) :: Nil)
 
     sqlContext.sessionState.catalog.dropTable(
-      TableIdentifier("listtablessuitetable"), ignoreIfNotExists = true)
+      TableIdentifier("listtablessuitetable"), ignoreIfNotExists = true, purge = false)
     assert(sqlContext.tables().filter("tableName = 'listtablessuitetable'").count() === 0)
   }
 
@@ -121,7 +122,8 @@ class SQLContextSuite extends SparkFunSuite with SharedSparkContext {
     df.createOrReplaceTempView("listtablessuitetable")
 
     val expectedSchema = StructType(
-      StructField("tableName", StringType, false) ::
+      StructField("database", StringType, false) ::
+        StructField("tableName", StringType, false) ::
         StructField("isTemporary", BooleanType, false) :: Nil)
 
     Seq(sqlContext.tables(), sqlContext.sql("SHOW TABLes")).foreach {

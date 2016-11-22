@@ -21,7 +21,7 @@ import com.github.fommil.netlib.BLAS.{getInstance => blas}
 import org.json4s.{DefaultFormats, JObject}
 import org.json4s.JsonDSL._
 
-import org.apache.spark.annotation.{Experimental, Since}
+import org.apache.spark.annotation.Since
 import org.apache.spark.internal.Logging
 import org.apache.spark.ml.{PredictionModel, Predictor}
 import org.apache.spark.ml.feature.LabeledPoint
@@ -40,11 +40,9 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.DoubleType
 
 /**
- * :: Experimental ::
- * [[http://en.wikipedia.org/wiki/Gradient_boosting Gradient-Boosted Trees (GBTs)]]
+ * Gradient-Boosted Trees (GBTs) (http://en.wikipedia.org/wiki/Gradient_boosting)
  * learning algorithm for classification.
  * It supports binary labels, as well as both continuous and categorical features.
- * Note: Multiclass labels are not currently supported.
  *
  * The implementation is based upon: J.H. Friedman. "Stochastic Gradient Boosting." 1999.
  *
@@ -55,9 +53,10 @@ import org.apache.spark.sql.types.DoubleType
  *    based on the loss function, whereas the original gradient boosting method does not.
  *  - We expect to implement TreeBoost in the future:
  *    [https://issues.apache.org/jira/browse/SPARK-4240]
+ *
+ * @note Multiclass labels are not currently supported.
  */
 @Since("1.4.0")
-@Experimental
 class GBTClassifier @Since("1.4.0") (
     @Since("1.4.0") override val uid: String)
   extends Predictor[Vector, GBTClassifier, GBTClassificationModel]
@@ -130,7 +129,7 @@ class GBTClassifier @Since("1.4.0") (
     // We copy and modify this from Classifier.extractLabeledPoints since GBT only supports
     // 2 classes now.  This lets us provide a more precise error message.
     val oldDataset: RDD[LabeledPoint] =
-      dataset.select(col($(labelCol)).cast(DoubleType), col($(featuresCol))).rdd.map {
+      dataset.select(col($(labelCol)), col($(featuresCol))).rdd.map {
         case Row(label: Double, features: Vector) =>
           require(label == 0 || label == 1, s"GBTClassifier was given" +
             s" dataset with invalid label $label.  Labels must be in {0,1}; note that" +
@@ -139,9 +138,17 @@ class GBTClassifier @Since("1.4.0") (
       }
     val numFeatures = oldDataset.first().features.size
     val boostingStrategy = super.getOldBoostingStrategy(categoricalFeatures, OldAlgo.Classification)
+
+    val instr = Instrumentation.create(this, oldDataset)
+    instr.logParams(params: _*)
+    instr.logNumFeatures(numFeatures)
+    instr.logNumClasses(2)
+
     val (baseLearners, learnerWeights) = GradientBoostedTrees.run(oldDataset, boostingStrategy,
       $(seed))
-    new GBTClassificationModel(uid, baseLearners, learnerWeights, numFeatures)
+    val m = new GBTClassificationModel(uid, baseLearners, learnerWeights, numFeatures)
+    instr.logSuccess(m)
+    m
   }
 
   @Since("1.4.1")
@@ -149,7 +156,6 @@ class GBTClassifier @Since("1.4.0") (
 }
 
 @Since("1.4.0")
-@Experimental
 object GBTClassifier extends DefaultParamsReadable[GBTClassifier] {
 
   /** Accessor for supported loss settings: logistic */
@@ -161,17 +167,16 @@ object GBTClassifier extends DefaultParamsReadable[GBTClassifier] {
 }
 
 /**
- * :: Experimental ::
- * [[http://en.wikipedia.org/wiki/Gradient_boosting Gradient-Boosted Trees (GBTs)]]
+ * Gradient-Boosted Trees (GBTs) (http://en.wikipedia.org/wiki/Gradient_boosting)
  * model for classification.
  * It supports binary labels, as well as both continuous and categorical features.
- * Note: Multiclass labels are not currently supported.
  *
  * @param _trees  Decision trees in the ensemble.
  * @param _treeWeights  Weights for the decision trees in the ensemble.
+ *
+ * @note Multiclass labels are not currently supported.
  */
 @Since("1.6.0")
-@Experimental
 class GBTClassificationModel private[ml](
     @Since("1.6.0") override val uid: String,
     private val _trees: Array[DecisionTreeRegressionModel],
@@ -238,8 +243,8 @@ class GBTClassificationModel private[ml](
    * The importance vector is normalized to sum to 1. This method is suggested by Hastie et al.
    * (Hastie, Tibshirani, Friedman. "The Elements of Statistical Learning, 2nd Edition." 2001.)
    * and follows the implementation from scikit-learn.
-   *
-   * @see [[DecisionTreeClassificationModel.featureImportances]]
+
+   * See `DecisionTreeClassificationModel.featureImportances`
    */
   @Since("2.0.0")
   lazy val featureImportances: Vector = TreeEnsembleModel.featureImportances(trees, numFeatures)
@@ -270,7 +275,7 @@ object GBTClassificationModel extends MLReadable[GBTClassificationModel] {
       val extraMetadata: JObject = Map(
         "numFeatures" -> instance.numFeatures,
         "numTrees" -> instance.getNumTrees)
-      EnsembleModelReadWrite.saveImpl(instance, path, sqlContext, extraMetadata)
+      EnsembleModelReadWrite.saveImpl(instance, path, sparkSession, extraMetadata)
     }
   }
 
@@ -283,7 +288,7 @@ object GBTClassificationModel extends MLReadable[GBTClassificationModel] {
     override def load(path: String): GBTClassificationModel = {
       implicit val format = DefaultFormats
       val (metadata: Metadata, treesData: Array[(Metadata, Node)], treeWeights: Array[Double]) =
-        EnsembleModelReadWrite.loadImpl(path, sqlContext, className, treeClassName)
+        EnsembleModelReadWrite.loadImpl(path, sparkSession, className, treeClassName)
       val numFeatures = (metadata.metadata \ "numFeatures").extract[Int]
       val numTrees = (metadata.metadata \ "numTrees").extract[Int]
 

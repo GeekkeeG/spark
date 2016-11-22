@@ -146,6 +146,10 @@ abstract class OrcSuite extends QueryTest with TestHiveSingleton with BeforeAndA
 
     sql("DROP TABLE IF EXISTS orcNullValues")
   }
+
+  test("SPARK-18433: Improve DataSource option keys to be more case-insensitive") {
+    assert(new OrcOptions(Map("Orc.Compress" -> "NONE")).compressionCodec == "NONE")
+  }
 }
 
 class OrcSourceSuite extends OrcSuite {
@@ -153,7 +157,7 @@ class OrcSourceSuite extends OrcSuite {
     super.beforeAll()
 
     spark.sql(
-      s"""CREATE TEMPORARY TABLE normal_orc_source
+      s"""CREATE TEMPORARY VIEW normal_orc_source
          |USING org.apache.spark.sql.hive.orc
          |OPTIONS (
          |  PATH '${new File(orcTableAsDir.getAbsolutePath).getCanonicalPath}'
@@ -161,7 +165,7 @@ class OrcSourceSuite extends OrcSuite {
        """.stripMargin)
 
     spark.sql(
-      s"""CREATE TEMPORARY TABLE normal_orc_as_source
+      s"""CREATE TEMPORARY VIEW normal_orc_as_source
          |USING org.apache.spark.sql.hive.orc
          |OPTIONS (
          |  PATH '${new File(orcTableAsDir.getAbsolutePath).getCanonicalPath}'

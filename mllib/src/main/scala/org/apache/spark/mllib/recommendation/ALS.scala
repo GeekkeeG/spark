@@ -216,6 +216,7 @@ class ALS private (
   }
 
   /**
+   * :: DeveloperApi ::
    * Set period (in iterations) between checkpoints (default = 10). Checkpointing helps with
    * recovery (when nodes fail) and StackOverflow exceptions caused by long lineage. It also helps
    * with eliminating temporary shuffle files on disk, which can be important when there are many
@@ -235,6 +236,8 @@ class ALS private (
    */
   @Since("0.8.0")
   def run(ratings: RDD[Rating]): MatrixFactorizationModel = {
+    require(!ratings.isEmpty(), s"No ratings available from $ratings")
+
     val sc = ratings.context
 
     val numUserBlocks = if (this.numUserBlocks == -1) {
